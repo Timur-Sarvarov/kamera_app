@@ -1,0 +1,570 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <title>Gesture Draw — рисование пальцами (MediaPipe Hands)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <!-- MediaPipe (через CDN) -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+  <style>
+    :root{
+      --bg: #0b1020;
+      --bg2: #0f1428;
+      --panel: rgba(12, 17, 34, .78);
+      --glass: rgba(255,255,255,.06);
+      --text: #e7ecff;
+      --muted: #9fb0ffcc;
+      --accent: #7cfdc5;
+      --accent2: #7dd3fc; /* голубой */
+      --danger: #ff6b6b;
+      --ring: 0 0 0 2px rgba(124,253,197,.35), 0 4px 18px rgba(124,253,197,.18);
+      --shadow: 0 10px 30px rgba(0,0,0,.45);
+    }
+    *{box-sizing:border-box}
+    html,body{height:100%;margin:0;background:radial-gradient(1200px 600px at 10% -10%, #16204a 0%, transparent 60%),
+                                   radial-gradient(1000px 800px at 110% 110%, #1b2c5e 0%, transparent 60%), var(--bg);
+              color:var(--text); font:500 14px/1.45 Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial}
+    header{
+      position:fixed; left:0; right:0; top:0; z-index:50;
+      display:flex; align-items:center; justify-content:space-between;
+      padding:10px 16px;
+      background:linear-gradient(to bottom, rgba(7,10,24,.9), rgba(7,10,24,.35));
+      border-bottom:1px solid rgba(255,255,255,.06);
+      backdrop-filter: blur(8px);
+    }
+    header .title{font-weight:800; letter-spacing:.3px}
+    header .title b{color:var(--accent)}
+    header .hint{
+      font-size:12px; color:var(--muted);
+      background:rgba(255,255,255,.05); padding:6px 10px; border-radius:10px; border:1px solid rgba(255,255,255,.08)
+    }
+
+    .app{ position:fixed; inset:0; display:grid; grid-template-rows: 1fr auto; padding-top:48px; }
+
+    .stage{
+      position:relative; display:flex; align-items:center; justify-content:center;
+      background:linear-gradient(180deg, var(--bg2) 0%, #070a18 100%);
+      overflow:hidden;
+      border-top:1px solid rgba(255,255,255,.05);
+      border-bottom:1px solid rgba(255,255,255,.05);
+    }
+    .stage::after{
+      content:""; position:absolute; inset:auto auto 0 0; width:100%; height:140px;
+      background:linear-gradient(to top, rgba(7,10,24,1) 0%, rgba(7,10,24,0) 100%); pointer-events:none; z-index:1;
+    }
+
+    video{
+      max-width:100%; max-height:100%; width:100%; height:100%; object-fit:contain;
+      transform: scaleX(-1);
+      filter: saturate(1.02) contrast(1.02);
+      background:#000;
+    }
+
+    canvas{ position:absolute; left:0; top:0; pointer-events:none; }
+    #drawCanvas{ z-index: 2; }
+    #overlayCanvas{ z-index: 3; }
+
+    .cursor{
+      position:absolute; z-index:4; width:18px; height:18px; border-radius:50%;
+      border:2px solid var(--accent); background:rgba(124,253,197,.12);
+      transform:translate(-50%,-50%); pointer-events:none; display:none;
+      box-shadow:0 0 0 4px rgba(124,253,197,.06), 0 0 16px rgba(124,253,197,.25);
+    }
+
+    .panel{
+      z-index:5; display:flex; gap:14px; align-items:center; padding:12px 16px; flex-wrap:wrap;
+      background:linear-gradient(to top, rgba(7,10,24,.95), rgba(7,10,24,.75));
+      border-top:1px solid rgba(255,255,255,.06);
+      box-shadow: var(--shadow);
+    }
+    .panel .group{display:flex; gap:10px; align-items:center; flex-wrap:wrap}
+    .label{opacity:.8}
+    .legend{opacity:.75; font-size:12px}
+    input[type="range"]{ width:180px; accent-color: var(--accent) }
+
+    .btn{
+      appearance:none; border:1px solid rgba(255,255,255,.16); background: var(--glass);
+      color:var(--text); padding:8px 12px; border-radius:12px; cursor:pointer;
+      transition:.15s transform, .15s background, .15s border-color, .15s box-shadow;
+      font-weight:700; letter-spacing:.2px;
+    }
+    .btn:hover{ transform:translateY(-1px); background:rgba(255,255,255,.09); border-color:rgba(255,255,255,.28) }
+    .btn:active{ transform:translateY(0) }
+    .btn.active{ box-shadow: var(--ring); border-color:transparent }
+
+    .swatch{
+      width:26px; height:26px; border-radius:8px; border:1px solid rgba(255,255,255,.35);
+      cursor:pointer; display:inline-block; transition:.15s transform,.15s box-shadow;
+      background-clip: padding-box;
+    }
+    .swatch:hover{ transform: translateY(-1px); box-shadow:0 6px 16px rgba(0,0,0,.35) }
+
+    .fps{
+      position:absolute; right:12px; top:12px; z-index:5;
+      font:600 12px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
+      padding:6px 8px; border-radius:10px;
+      background:rgba(0,0,0,.45); border:1px solid rgba(255,255,255,.15); opacity:.9;
+    }
+
+    .toast{
+      position:absolute; left:50%; top:18px; transform:translateX(-50%);
+      background:linear-gradient(180deg, #ff7b7b, #ff5252);
+      color:#1f0c0c; padding:10px 14px; border-radius:12px; font-weight:800; display:none; z-index:10;
+      box-shadow:0 12px 28px rgba(255,82,82,.35), inset 0 0 0 1px rgba(255,255,255,.35);
+    }
+
+    @media (max-width: 720px){
+      header .hint{ display:none }
+      input[type="range"]{ width:130px }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="title">Gesture <b>Draw</b></div>
+    <div class="hint">Жест «pinch» (большой+указательный) → рисуем | Горячие клавиши: B/E, C, S, [ / ], 1..6</div>
+  </header>
+
+  <div class="app" id="app">
+    <div class="stage" id="stage">
+      <div class="toast" id="toast">Разрешите доступ к камере</div>
+      <div class="fps" id="fps">FPS: —</div>
+      <video id="video" playsinline></video>
+
+      <!-- Постоянный рисунок -->
+      <canvas id="drawCanvas"></canvas>
+      <!-- Оверлей (скелет, маркеры, курсор) -->
+      <canvas id="overlayCanvas"></canvas>
+      <div class="cursor" id="cursor"></div>
+    </div>
+
+    <div class="panel">
+      <div class="group">
+        <span class="label">Толщина</span>
+        <input id="thickness" type="range" min="2" max="30" step="1" value="6">
+        <span class="legend" id="thicknessVal">6 px</span>
+      </div>
+      <div class="group">
+        <span class="label">Цвет</span>
+        <button class="swatch" data-color="#000000" style="background:#000000" title="1"></button>
+        <button class="swatch" data-color="#ffffff" style="background:#ffffff" title="2"></button>
+        <button class="swatch" data-color="#f87171" style="background:#f87171" title="3"></button>
+        <button class="swatch" data-color="#fbbf24" style="background:#fbbf24" title="4"></button>
+        <button class="swatch" data-color="#34d399" style="background:#34d399" title="5"></button>
+        <button class="swatch" data-color="#60a5fa" style="background:#60a5fa" title="6"></button>
+        <input id="colorPicker" type="color" value="#000000" title="Выбрать цвет" />
+      </div>
+      <div class="group">
+        <button id="brushBtn" class="btn active" title="B">Кисть (B)</button>
+        <button id="eraserBtn" class="btn" title="E">Ластик (E)</button>
+        <label class="btn" style="display:flex;gap:8px;align-items:center">
+          <input id="dynW" type="checkbox" /> Динамическая толщина
+        </label>
+      </div>
+      <div class="group">
+        <button id="clearBtn" class="btn" title="C" style="border-color:rgba(255,255,255,.2)">Очистить (C)</button>
+        <button id="saveBtn" class="btn" title="S" style="border-color:rgba(255,255,255,.2)">Скачать PNG (S)</button>
+      </div>
+    </div>
+  </div>
+
+<script>
+(() => {
+  // ===== DOM =====
+  const video = document.getElementById('video');
+  const drawCanvas = document.getElementById('drawCanvas');
+  const overlayCanvas = document.getElementById('overlayCanvas');
+  const drawCtx = drawCanvas.getContext('2d');
+  const overlayCtx = overlayCanvas.getContext('2d');
+  const cursorEl = document.getElementById('cursor');
+  const toast = document.getElementById('toast');
+  const fpsEl = document.getElementById('fps');
+
+  const thicknessSlider = document.getElementById('thickness');
+  const thicknessVal = document.getElementById('thicknessVal');
+  const colorPicker = document.getElementById('colorPicker');
+  const brushBtn = document.getElementById('brushBtn');
+  const eraserBtn = document.getElementById('eraserBtn');
+  const dynWCheckbox = document.getElementById('dynW');
+  const clearBtn = document.getElementById('clearBtn');
+  const saveBtn = document.getElementById('saveBtn');
+  const paletteButtons = Array.from(document.querySelectorAll('.swatch'));
+  const paletteHotkeys = paletteButtons.map((_, i) => (i+1).toString());
+
+  // ===== Brush & States =====
+  let brushColor = '#000000';
+  let brushWidth = 6;
+  let isEraser = false;
+
+  // Smoothing (EMA)
+  const alpha = 0.35;
+  let prevSmooth = null;
+
+  // Pinch with hysteresis + debounce
+  const PINCH_IN  = 0.05;
+  const PINCH_OUT = 0.07;
+  const DEBOUNCE_N = 2;
+  let pinchActive = false;
+  let tCount = 0, fCount = 0;
+
+  // Tracking loss
+  let lastLmTs = 0;
+  let trackingLost = true;
+
+  // Drawing flag
+  let drawing = false;
+
+  // Dynamic width
+  const WMIN = 3, WMAX = 25;
+  const K_DYNAMIC = 0.6;
+
+  // FPS
+  let frameCount = 0;
+  let lastFpsUpdate = performance.now();
+
+  // Canvas CSS size / DPR and visible video content rect (letterbox aware)
+  let cssW = 640, cssH = 480, dpr = Math.max(1, window.devicePixelRatio || 1);
+  let contentX = 0, contentY = 0, contentW = 640, contentH = 480; // видимая часть видео (без полей)
+
+  // ===== Utils =====
+  function clamp(v,a,b){ return Math.max(a, Math.min(b, v)); }
+
+  function sizeCanvasesToVideo(){
+    const rect = video.getBoundingClientRect();
+    cssW = Math.max(1, Math.round(rect.width));
+    cssH = Math.max(1, Math.round(rect.height));
+    dpr = Math.max(1, window.devicePixelRatio || 1);
+
+    // физические пиксели
+    [drawCanvas, overlayCanvas].forEach((c) => {
+      c.width  = Math.round(cssW * dpr);
+      c.height = Math.round(cssH * dpr);
+      c.style.width  = cssW + 'px';
+      c.style.height = cssH + 'px';
+    });
+    drawCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    overlayCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    // вычисляем реальную область содержимого видео внутри элемента (object-fit: contain)
+    const vw = video.videoWidth || 640;
+    const vh = video.videoHeight || 480;
+    const scale = Math.min(cssW / vw, cssH / vh);
+    contentW = vw * scale;
+    contentH = vh * scale;
+    contentX = (cssW - contentW) / 2;
+    contentY = (cssH - contentH) / 2;
+  }
+
+  function normToCanvas(xn, yn){
+    // Нормализованные координаты относительно ИЗОБРАЖЕНИЯ видео -> пиксели канваса (учёт letterbox + зеркала)
+    const xImg = xn * contentW;
+    const yImg = yn * contentH;
+    const xInCanvas = contentX + (contentW - xImg); // зеркалим внутри контента
+    const yInCanvas = contentY + yImg;
+    return {x: xInCanvas, y: yInCanvas};
+  }
+
+  function smoothPoint(pt){
+    if(!pt) return null;
+    if(!prevSmooth){
+      prevSmooth = {x: pt.x, y: pt.y};
+      return prevSmooth;
+    }
+    prevSmooth = {
+      x: alpha*pt.x + (1-alpha)*prevSmooth.x,
+      y: alpha*pt.y + (1-alpha)*prevSmooth.y
+    };
+    return prevSmooth;
+  }
+
+  function pinchPredicate(distance){
+    return pinchActive ? (distance <= PINCH_OUT) : (distance <= PINCH_IN);
+  }
+
+  function updateDebounce(pinchNow){
+    if(pinchNow){
+      tCount++; fCount = 0;
+      if(!pinchActive && tCount >= DEBOUNCE_N){
+        pinchActive = true; tCount = 0;
+      }
+    }else{
+      fCount++; tCount = 0;
+      if(pinchActive && fCount >= DEBOUNCE_N){
+        pinchActive = false; fCount = 0;
+      }
+    }
+  }
+
+  function renderCursor(pt){
+    if(!pt){
+      cursorEl.style.display = 'none';
+      return;
+    }
+    cursorEl.style.display = 'block';
+    cursorEl.style.left = pt.x + 'px';
+    cursorEl.style.top  = pt.y + 'px';
+  }
+
+  function drawLandmarksAndSkeleton(landmarks){
+    overlayCtx.save();
+    overlayCtx.clearRect(0,0,cssW,cssH);
+
+    // (необязательно) слегка затемним поля вокруг контента
+    // overlayCtx.fillStyle = 'rgba(0,0,0,.0)'; overlayCtx.fillRect(0,0,cssW,cssH);
+
+    const px = landmarks.map(lm => normToCanvas(lm.x, lm.y));
+    const connections = window.HAND_CONNECTIONS || [];
+
+    overlayCtx.lineWidth = 1.6;
+    overlayCtx.strokeStyle = 'rgba(125, 211, 252, .85)'; // голубые линии
+    overlayCtx.globalAlpha = 1;
+
+    for(const [i,j] of connections){
+      overlayCtx.beginPath();
+      overlayCtx.moveTo(px[i].x, px[i].y);
+      overlayCtx.lineTo(px[j].x, px[j].y);
+      overlayCtx.stroke();
+    }
+    overlayCtx.fillStyle = 'rgba(125, 211, 252, .85)'; // голубые точки
+    for(const p of px){
+      overlayCtx.beginPath();
+      overlayCtx.arc(p.x, p.y, 2.2, 0, Math.PI*2);
+      overlayCtx.fill();
+    }
+    overlayCtx.restore();
+  }
+
+  function beginStrokeIfNeeded(pt){
+    if(!drawing){
+      drawing = true;
+      drawCtx.save();
+      drawCtx.lineJoin = 'round';
+      drawCtx.lineCap  = 'round';
+      drawCtx.globalCompositeOperation = isEraser ? 'destination-out' : 'source-over';
+      drawCtx.strokeStyle = brushColor;
+      drawCtx.lineWidth   = brushWidth;
+      drawCtx.beginPath();
+      drawCtx.moveTo(pt.x, pt.y);
+    }
+  }
+
+  function drawStroke(pt, dynamicWidth){
+    if(dynamicWidth != null){ drawCtx.lineWidth = dynamicWidth; }
+    drawCtx.lineTo(pt.x, pt.y);
+    drawCtx.stroke();
+  }
+
+  function endStroke(){
+    if(drawing){
+      drawCtx.closePath();
+      drawCtx.restore();
+      drawing = false;
+    }
+  }
+
+  function stopDrawingAndHideCursor(){
+    endStroke();
+    renderCursor(null);
+  }
+
+  function clearDrawing(confirmAsk = true){
+    if(confirmAsk){
+      const yes = confirm('Очистить весь рисунок? Действие необратимо.');
+      if(!yes) return;
+    }
+    drawCtx.clearRect(0,0,cssW,cssH);
+  }
+
+  function savePNG(){
+    const url = drawCanvas.toDataURL('image/png');
+    const a = document.createElement('a');
+    a.href = url; a.download = 'gesture-draw.png'; a.click();
+  }
+
+  function setBrushMode(){ isEraser = false; brushBtn.classList.add('active'); eraserBtn.classList.remove('active'); }
+  function setEraserMode(){ isEraser = true; eraserBtn.classList.add('active'); brushBtn.classList.remove('active'); }
+
+  // ===== MediaPipe Hands =====
+  let hands = null;
+  let camera = null;
+
+  async function initVideo(){
+    try{
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio:false,
+        video:{ width: {ideal: 640}, height: {ideal: 480}, facingMode: 'user' }
+      });
+      video.srcObject = stream;
+      video.addEventListener('loadedmetadata', sizeCanvasesToVideo);
+      await video.play();
+      sizeCanvasesToVideo();
+      window.addEventListener('resize', sizeCanvasesToVideo);
+    }catch(err){
+      console.error('[camera] Доступ к камере отклонён:', err);
+      toast.style.display = 'block';
+      throw err;
+    }
+  }
+
+  function initHands(){
+    hands = new Hands({ locateFile: (f) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}` });
+    hands.setOptions({
+      maxNumHands: 1,
+      modelComplexity: 1,
+      minDetectionConfidence: 0.5,
+      minTrackingConfidence: 0.5
+    });
+    hands.onResults(onResults);
+
+    camera = new Camera(video, {
+      onFrame: async () => {
+        try{ await hands.send({image: video}); }
+        catch(e){ console.error('[hands.send] error:', e); }
+      },
+      width: 640, height: 480
+    });
+    camera.start();
+  }
+
+  function onResults(results){
+    // FPS
+    frameCount++;
+    const now = performance.now();
+    if(now - lastFpsUpdate >= 500){
+      const fps = Math.round(frameCount * 1000 / (now - lastFpsUpdate));
+      fpsEl.textContent = `FPS: ${fps}`;
+      lastFpsUpdate = now; frameCount = 0;
+    }
+
+    // No landmarks?
+    if(!results || !results.multiHandLandmarks || results.multiHandLandmarks.length === 0){
+      if(!trackingLost && (performance.now() - lastLmTs > 200)){
+        trackingLost = true;
+        stopDrawingAndHideCursor();
+        overlayCtx.clearRect(0,0,cssW,cssH);
+      }
+      return;
+    }
+
+    const lm = results.multiHandLandmarks[0];
+    lastLmTs = performance.now();
+    trackingLost = false;
+
+    // Overlay (skeleton + points)
+    drawLandmarksAndSkeleton(lm);
+
+    // Cursor at index fingertip (8)
+    const tip8 = normToCanvas(lm[8].x, lm[8].y);
+
+    // Pinch distance between 4 and 8 (normalized space)
+    const dx = lm[4].x - lm[8].x;
+    const dy = lm[4].y - lm[8].y;
+    const distNorm = Math.hypot(dx, dy);
+
+    const pinchNow = pinchPredicate(distNorm);
+    updateDebounce(pinchNow);
+
+    const smooth = smoothPoint(tip8);
+
+    if(smooth){
+      renderCursor(smooth);
+      if(pinchActive){
+        let dynW = null;
+        if(dynWCheckbox.checked){
+          const w = clamp(K_DYNAMIC / Math.max(0.0001, distNorm), WMIN, WMAX);
+          dynW = w;
+        }
+        beginStrokeIfNeeded(smooth);
+        drawStroke(smooth, dynW);
+      } else {
+        endStroke();
+      }
+    } else {
+      renderCursor(null);
+      endStroke();
+    }
+  }
+
+  // Guard loop for tracking loss > 200ms
+  function rafLoop(){
+    if(performance.now() - lastLmTs > 200){
+      if(!trackingLost){
+        trackingLost = true;
+        stopDrawingAndHideCursor();
+        overlayCtx.clearRect(0,0,cssW,cssH);
+      }
+    }
+    requestAnimationFrame(rafLoop);
+  }
+
+  // ===== UI & Hotkeys =====
+  function bindUI(){
+    thicknessSlider.addEventListener('input', e => {
+      brushWidth = parseInt(e.target.value, 10);
+      thicknessVal.textContent = `${brushWidth} px`;
+    });
+
+    paletteButtons.forEach(btn => {
+      btn.addEventListener('click', () => {
+        brushColor = btn.dataset.color;
+        colorPicker.value = toHex(brushColor);
+        if(!isEraser) setBrushMode();
+      });
+    });
+
+    colorPicker.addEventListener('input', e => {
+      brushColor = e.target.value;
+      if(!isEraser) setBrushMode();
+    });
+
+    brushBtn.addEventListener('click', setBrushMode);
+    eraserBtn.addEventListener('click', setEraserMode);
+    clearBtn.addEventListener('click', () => clearDrawing(true));
+    saveBtn.addEventListener('click', savePNG);
+
+    window.addEventListener('keydown', (e) => {
+      if(paletteHotkeys.includes(e.key)){
+        const idx = parseInt(e.key,10)-1; paletteButtons[idx]?.click(); return;
+      }
+      switch(e.key){
+        case 'b': case 'B': setBrushMode(); break;
+        case 'e': case 'E': setEraserMode(); break;
+        case 'c': case 'C': clearDrawing(true); break;
+        case 's': case 'S': savePNG(); break;
+        case '[':
+          brushWidth = clamp(brushWidth-1, 2, 30);
+          thicknessSlider.value = brushWidth; thicknessVal.textContent = `${brushWidth} px`; break;
+        case ']':
+          brushWidth = clamp(brushWidth+1, 2, 30);
+          thicknessSlider.value = brushWidth; thicknessVal.textContent = `${brushWidth} px`; break;
+      }
+    });
+  }
+
+  function toHex(rgb){
+    if(/^#/.test(rgb)) return rgb;
+    const ctx = document.createElement('canvas').getContext('2d');
+    ctx.fillStyle = rgb; return ctx.fillStyle;
+  }
+
+  // ===== Start! =====
+  (async function start(){
+    console.log('[init] Старт приложения');
+    bindUI();
+    thicknessVal.textContent = `${brushWidth} px`;
+    try{
+      await initVideo();
+      initHands();
+      rafLoop();
+      console.log('[init] Камера и MediaPipe Hands инициализированы');
+    }catch(e){
+      console.error('[init] Не удалось запустить приложение:', e);
+    }
+  })();
+
+})();
+</script>
+</body>
+</html>
